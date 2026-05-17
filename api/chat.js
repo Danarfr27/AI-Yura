@@ -1,4 +1,4 @@
-// Serverless function for Vercel with API Key Rotation Strategy
+// Serverless function for Vercel with OpenAI API Key Rotation Strategy
 // Supports fallback to multiple keys if one hits Rate Limit (429)
 
 export default async function handler(req, res) {
@@ -8,81 +8,118 @@ export default async function handler(req, res) {
   }
 
   // 2. Ambil Data Body
-  const { contents } = req.body;
-  if (!contents) {
-    return res.status(400).json({ error: 'Body "contents" is required' });
+  const { messages, model } = req.body;
+
+  if (!messages) {
+    return res.status(400).json({
+      error: 'Body "messages" is required'
+    });
   }
 
-  // 3. Konfigurasi Kunci & Model
-  // Ambil semua key dari .env dan pisahkan berdasarkan koma
-  const keysString = process.env.GEMINI_API_KEYS || process.env.GENERATIVE_API_KEY || '';
-  const apiKeys = keysString.split(',').filter(k => k.trim().length > 0);
-  
-  // Default ke 1.5-flash jika env tidak diisi (karena 2.5 belum rilis publik saat ini)
-  const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  // 3. Ambil semua API Key OpenAI dari ENV
+  // Format ENV:
+  // OPENAI_API_KEYS=sk-xxx,sk-yyy,sk-zzz
+
+  const keysString =
+    process.env.OPENAI_API_KEYS ||
+    process.env.OPENAI_API_KEY ||
+    '';
+
+  const apiKeys = keysString
+    .split(',')
+    .filter(k => k.trim().length > 0);
+
+  // Default model
+  const OPENAI_MODEL = model || process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
   if (apiKeys.length === 0) {
-    console.error('Missing GEMINI_API_KEYS environment variable');
-    return res.status(500).json({ error: 'Server configuration error: No API keys found.' });
+    console.error('Missing OPENAI_API_KEYS environment variable');
+
+    return res.status(500).json({
+      error: 'Server configuration error: No API keys found.'
+    });
   }
 
-  // 4. Logika Rotasi Key (Failover)
+  // 4. Logika Rotasi Key
   let lastError = null;
   let success = false;
   let finalData = null;
 
-  // Loop mencoba setiap key yang ada
   for (let i = 0; i < apiKeys.length; i++) {
     const currentKey = apiKeys[i].trim();
-    const externalApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${currentKey}`;
 
     try {
-      // console.log(`[Attempt] Using Key Index: ${i} for Model: ${GEMINI_MODEL}`); // Uncomment untuk debug
+      // console.log(`[Attempt] Using OpenAI Key Index: ${i}`);
 
-      const response = await fetch(externalApiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents })
-      });
+      const response = await fetch(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${currentKey}`
+          },
+          body: JSON.stringify({
+            model: OPENAI_MODEL,
+            messages,
+            temperature: 0.7
+          })
+        }
+      );
 
-      // Jika Sukses (200 OK)
+      // SUCCESS
       if (response.ok) {
         finalData = await response.json();
         success = true;
-        break; // KELUAR dari loop, kita sudah dapat datanya
+        break;
       }
 
-      // Jika Error 429 (Rate Limit / Kuota Habis)
+      // RATE LIMIT
       if (response.status === 429) {
-        console.warn(`[Limit] Key ke-${i + 1} habis (429). Mencoba key berikutnya...`);
-        lastError = { status: 429, message: 'Rate limit exceeded' };
-        continue; // LANJUT ke iterasi loop berikutnya (Key selanjutnya)
+        console.warn(
+          `[Limit] Key ke-${i + 1} habis (429). Mencoba key berikutnya...`
+        );
+
+        lastError = {
+          status: 429,
+          message: 'Rate limit exceeded'
+        };
+
+        continue;
       }
 
-      // Jika Error Lain (Misal 400 Bad Request karena prompt salah)
-      // Biasanya tidak perlu ganti key, karena salahnya di input user
+      // ERROR LAIN
       const errorData = await response.json();
+
       console.error(`[API Error] Key ${i}:`, errorData);
-      lastError = { status: response.status, details: errorData };
-      break; // Stop mencoba, karena ini bukan masalah kuota
+
+      lastError = {
+        status: response.status,
+        details: errorData
+      };
+
+      break;
 
     } catch (error) {
       console.error(`[Network Error] Key ${i}:`, error);
-      lastError = { status: 500, message: 'Internal Network Error' };
-      // Jika error koneksi, lanjut coba key berikutnya
+
+      lastError = {
+        status: 500,
+        message: 'Internal Network Error'
+      };
+
+      // lanjut coba key berikutnya
     }
   }
 
-  // 5. Kirim Response Akhir ke User
+  // 5. Response Akhir
   if (success && finalData) {
     return res.status(200).json(finalData);
-  } else {
-    // Jika semua key sudah dicoba dan gagal semua
-    return res.status(lastError?.status || 500).json({
-      error: 'Generation failed',
-      message: 'Semua API Key sedang sibuk atau bermasalah.',
-      details: lastError
-    });
   }
-}
 
+  return res.status(lastError?.status || 500).json({
+    error: 'Generation failed',
+    message: 'Semua OpenAI API Key sedang sibuk atau bermasalah.',
+    details: lastError
+  });
+}
