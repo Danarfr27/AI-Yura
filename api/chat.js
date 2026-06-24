@@ -86,7 +86,7 @@ export default async function handler(req, res) {
     const currentKey = apiKeys[i].trim();
 
     try {
-      // console.log(`[Attempt] Using OpenAI Key Index: ${i}`);
+      // console.log(`[Attempt] Using Gemini Key Index: ${i}`);
 
       const response = await fetch(
         'https://api.openai.com/v1/chat/completions',
@@ -156,7 +156,7 @@ export default async function handler(req, res) {
 
   return res.status(lastError?.status || 500).json({
     error: 'Generation failed',
-    message: 'Semua OpenAI API Key sedang sibuk atau bermasalah.',
+    message: 'Semua Gemini API Key sedang sibuk atau bermasalah.',
     details: lastError
   });
 }
