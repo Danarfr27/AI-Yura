@@ -1,4 +1,4 @@
-// Serverless function for Vercel with Gemini API Key Rotation
+// Serverless function for Vercel with API Key Rotation Strategy
 // Supports fallback to multiple keys if one hits Rate Limit (429)
 
 export default async function handler(req, res) {
@@ -8,155 +8,80 @@ export default async function handler(req, res) {
   }
 
   // 2. Ambil Data Body
-  const { messages, contents, model } = req.body;
-  const rawMessages = messages || contents;
-
-  if (!rawMessages || !Array.isArray(rawMessages) || rawMessages.length === 0) {
-    return res.status(400).json({
-      error: 'Body "messages" atau "contents" is required'
-    });
+  const { contents } = req.body;
+  if (!contents) {
+    return res.status(400).json({ error: 'Body "contents" is required' });
   }
 
-  const normalizeMessage = message => {
-    const role = message.role === 'model'
-      ? 'assistant'
-      : message.role === 'assistant' || message.role === 'system'
-      ? message.role
-      : 'user';
-
-    const getText = item => {
-      if (typeof item === 'string') return item;
-      if (typeof item === 'object' && item !== null) return item.text || item.content || '';
-      return '';
-    };
-
-    const contentText = (() => {
-      if (typeof message.content === 'string') return message.content;
-      if (Array.isArray(message.content)) return message.content.map(getText).join(' ');
-      if (Array.isArray(message.parts)) return message.parts.map(getText).join(' ');
-      if (typeof message.text === 'string') return message.text;
-      return '';
-    })();
-
-    return {
-      role,
-      content: contentText.trim()
-    };
-  };
-
-  const normalizedMessages = rawMessages
-    .map(normalizeMessage)
-    .filter(msg => msg.content && msg.content.length > 0);
-
-  if (normalizedMessages.length === 0) {
-    return res.status(400).json({
-      error: 'No valid messages found in body'
-    });
-  }
-
-  // 3. Ambil semua API Key Gemini dari ENV
-  const keysString =
-    process.env.GEMINI_API_KEYS ||
-    process.env.GEMINI_API_KEY ||
-    '';
-
-  const apiKeys = keysString
-    .split(',')
-    .map(k => k.trim())
-    .filter(k => k.length > 0);
-
-  // Default model
-  const GEMINI_MODEL = model || process.env.GEMINI_MODEL || 'gemini-2.5flash';
+  // 3. Konfigurasi Kunci & Model
+  // Ambil semua key dari .env dan pisahkan berdasarkan koma
+  const keysString = process.env.GEMINI_API_KEYS || process.env.GENERATIVE_API_KEY || '';
+  const apiKeys = keysString.split(',').filter(k => k.trim().length > 0);
+  
+  // Default ke 1.5-flash jika env tidak diisi (karena 2.5 belum rilis publik saat ini)
+  const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
   if (apiKeys.length === 0) {
-    console.error('Missing GEMINI_API_KEYS or GEMINI_API_KEY environment variable');
-
-    return res.status(500).json({
-      error: 'Server configuration error: No Gemini API keys found.',
-      details: 'Set GEMINI_API_KEYS or GEMINI_API_KEY in the environment.'
-    });
+    console.error('Missing GEMINI_API_KEYS environment variable');
+    return res.status(500).json({ error: 'Server configuration error: No API keys found.' });
   }
 
-  // 4. Logika Rotasi Key
+  // 4. Logika Rotasi Key (Failover)
   let lastError = null;
   let success = false;
   let finalData = null;
 
+  // Loop mencoba setiap key yang ada
   for (let i = 0; i < apiKeys.length; i++) {
     const currentKey = apiKeys[i].trim();
+    const externalApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${currentKey}`;
 
     try {
-      // console.log(`[Attempt] Using Gemini Key Index: ${i}`);
+      // console.log(`[Attempt] Using Key Index: ${i} for Model: ${GEMINI_MODEL}`); // Uncomment untuk debug
 
-      const response = await fetch(
-        'https://api.openai.com/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${currentKey}`
-          },
-          body: JSON.stringify({
-            model: GEMINI_MODEL,
-            messages: normalizedMessages,
-            temperature: 0.7
-          })
-        }
-      );
+      const response = await fetch(externalApiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents })
+      });
 
-      // SUCCESS
+      // Jika Sukses (200 OK)
       if (response.ok) {
         finalData = await response.json();
         success = true;
-        break;
+        break; // KELUAR dari loop, kita sudah dapat datanya
       }
 
-      // RATE LIMIT
+      // Jika Error 429 (Rate Limit / Kuota Habis)
       if (response.status === 429) {
-        console.warn(
-          `[Limit] Key ke-${i + 1} habis (429). Mencoba key berikutnya...`
-        );
-
-        lastError = {
-          status: 429,
-          message: 'Rate limit exceeded'
-        };
-
-        continue;
+        console.warn(`[Limit] Key ke-${i + 1} habis (429). Mencoba key berikutnya...`);
+        lastError = { status: 429, message: 'Rate limit exceeded' };
+        continue; // LANJUT ke iterasi loop berikutnya (Key selanjutnya)
       }
 
-      // ERROR LAIN
+      // Jika Error Lain (Misal 400 Bad Request karena prompt salah)
+      // Biasanya tidak perlu ganti key, karena salahnya di input user
       const errorData = await response.json();
-
       console.error(`[API Error] Key ${i}:`, errorData);
-
-      lastError = {
-        status: response.status,
-        details: errorData
-      };
-
-      break;
+      lastError = { status: response.status, details: errorData };
+      break; // Stop mencoba, karena ini bukan masalah kuota
 
     } catch (error) {
       console.error(`[Network Error] Key ${i}:`, error);
-
-      lastError = {
-        status: 500,
-        message: 'Internal Network Error'
-      };
-
-      // lanjut coba key berikutnya
+      lastError = { status: 500, message: 'Internal Network Error' };
+      // Jika error koneksi, lanjut coba key berikutnya
     }
   }
 
-  // 5. Response Akhir
+  // 5. Kirim Response Akhir ke User
   if (success && finalData) {
     return res.status(200).json(finalData);
+  } else {
+    // Jika semua key sudah dicoba dan gagal semua
+    return res.status(lastError?.status || 500).json({
+      error: 'Generation failed',
+      message: 'Semua API Key sedang sibuk atau bermasalah.',
+      details: lastError
+    });
   }
-
-  return res.status(lastError?.status || 500).json({
-    error: 'Generation failed',
-    message: 'Semua Gemini API Key sedang sibuk atau bermasalah.',
-    details: lastError
-  });
 }
