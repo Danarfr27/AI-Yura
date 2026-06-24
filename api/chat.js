@@ -21,8 +21,8 @@ export default async function handler(req, res) {
   // OPENAI_API_KEYS=sk-xxx,sk-yyy,sk-zzz
 
   const keysString =
-    process.env.OPENAI_API_KEYS ||
-    process.env.OPENAI_API_KEY ||
+    process.env.GEMINI_API_KEYS ||
+    process.env.GEMINI_API_KEY ||
     '';
 
   const apiKeys = keysString
@@ -30,10 +30,10 @@ export default async function handler(req, res) {
     .filter(k => k.trim().length > 0);
 
   // Default model
-  const OPENAI_MODEL = model || process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+  const GEMINI_MODEL = model || process.env.GEMINI_MODEL || 'gemini-2.5flash';
 
   if (apiKeys.length === 0) {
-    console.error('Missing OPENAI_API_KEYS environment variable');
+    console.error('Missing GEMINI_API_KEYS environment variable');
 
     return res.status(500).json({
       error: 'Server configuration error: No API keys found.'
@@ -60,7 +60,7 @@ export default async function handler(req, res) {
             'Authorization': `Bearer ${currentKey}`
           },
           body: JSON.stringify({
-            model: OPENAI_MODEL,
+            model: GEMINI_MODEL,
             messages,
             temperature: 0.7
           })
