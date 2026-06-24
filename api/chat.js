@@ -1,4 +1,4 @@
-// Serverless function for Vercel with OpenAI API Key Rotation Strategy
+// Serverless function for Vercel with Gemini API Key Rotation
 // Supports fallback to multiple keys if one hits Rate Limit (429)
 
 export default async function handler(req, res) {
@@ -8,18 +8,53 @@ export default async function handler(req, res) {
   }
 
   // 2. Ambil Data Body
-  const { messages, model } = req.body;
+  const { messages, contents, model } = req.body;
+  const rawMessages = messages || contents;
 
-  if (!messages) {
+  if (!rawMessages || !Array.isArray(rawMessages) || rawMessages.length === 0) {
     return res.status(400).json({
-      error: 'Body "messages" is required'
+      error: 'Body "messages" atau "contents" is required'
     });
   }
 
-  // 3. Ambil semua API Key OpenAI dari ENV
-  // Format ENV:
-  // OPENAI_API_KEYS=sk-xxx,sk-yyy,sk-zzz
+  const normalizeMessage = message => {
+    const role = message.role === 'model'
+      ? 'assistant'
+      : message.role === 'assistant' || message.role === 'system'
+      ? message.role
+      : 'user';
 
+    const getText = item => {
+      if (typeof item === 'string') return item;
+      if (typeof item === 'object' && item !== null) return item.text || item.content || '';
+      return '';
+    };
+
+    const contentText = (() => {
+      if (typeof message.content === 'string') return message.content;
+      if (Array.isArray(message.content)) return message.content.map(getText).join(' ');
+      if (Array.isArray(message.parts)) return message.parts.map(getText).join(' ');
+      if (typeof message.text === 'string') return message.text;
+      return '';
+    })();
+
+    return {
+      role,
+      content: contentText.trim()
+    };
+  };
+
+  const normalizedMessages = rawMessages
+    .map(normalizeMessage)
+    .filter(msg => msg.content && msg.content.length > 0);
+
+  if (normalizedMessages.length === 0) {
+    return res.status(400).json({
+      error: 'No valid messages found in body'
+    });
+  }
+
+  // 3. Ambil semua API Key Gemini dari ENV
   const keysString =
     process.env.GEMINI_API_KEYS ||
     process.env.GEMINI_API_KEY ||
@@ -27,13 +62,14 @@ export default async function handler(req, res) {
 
   const apiKeys = keysString
     .split(',')
-    .filter(k => k.trim().length > 0);
+    .map(k => k.trim())
+    .filter(k => k.length > 0);
 
   // Default model
   const GEMINI_MODEL = model || process.env.GEMINI_MODEL || 'gemini-2.5flash';
 
   if (apiKeys.length === 0) {
-    console.error('Missing GEMINI_API_KEYS environment variable');
+    console.error('Missing GEMINI_API_KEYS or GEMINI_API_KEY environment variable');
 
     return res.status(500).json({
       error: 'Server configuration error: No API keys found.'
@@ -61,7 +97,7 @@ export default async function handler(req, res) {
           },
           body: JSON.stringify({
             model: GEMINI_MODEL,
-            messages,
+            messages: normalizedMessages,
             temperature: 0.7
           })
         }
