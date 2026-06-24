@@ -72,7 +72,8 @@ export default async function handler(req, res) {
     console.error('Missing GEMINI_API_KEYS or GEMINI_API_KEY environment variable');
 
     return res.status(500).json({
-      error: 'Server configuration error: No API keys found.'
+      error: 'Server configuration error: No Gemini API keys found.',
+      details: 'Set GEMINI_API_KEYS or GEMINI_API_KEY in the environment.'
     });
   }
 
